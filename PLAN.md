@@ -10,10 +10,11 @@
 | **`c3_gateway`** | ESP32-C3 (`esp32-c3-devkitm-1`) | Connects to `cpx_node` via UART; hosts the **Wi-Fi HTTP + API server**; serves a real-time living-room dashboard displaying comfort metrics and allowing remote tuning of comfort thresholds, mute/unmute, and active gadget mode selection. |
 | **`common/mcshal_protocol`** | Shared Header-Only C++ Library | Defines the zero-allocation line-based UART protocol (`TelemetryFrame`, `ConfigCommand`, serializer/parser) shared by both nodes. |
 
-### Physical Wiring (UART Bridge)
-Both boards run at **3.3V logic**, so no level shifter is required:
-- `CPX TX (Pad A7 / D1)` $\rightarrow$ `ESP32-C3 RX (GPIO 20 or configured RX pin)`
-- `CPX RX (Pad A6 / D0)` $\leftarrow$ `ESP32-C3 TX (GPIO 21 or configured TX pin)`
+### Physical Wiring (UART Bridge) — VERIFIED ON HARDWARE
+Both boards run at **3.3V logic**, so no level shifter is required.
+Note: the ESP32-C3 SuperMini's silkscreen labels **GPIO21 = RXD0** and **GPIO20 = TXD0**:
+- `CPX TX (Pad A7 / D1)` $\rightarrow$ `ESP32-C3 RX (GPIO 21)`
+- `CPX RX (Pad A6 / D0)` $\leftarrow$ `ESP32-C3 TX (GPIO 20)`
 - `CPX GND` $\leftrightarrow$ `ESP32-C3 GND`
 
 ---
@@ -62,10 +63,15 @@ Human-readable, newline-delimited frames at `115200 8N1` (easy to debug with any
   - Hardware HAL for CPX Temp, Light, PDM Mic, 10x NeoPixels, Speaker, and Slide Switch (hardware mute).
   - `WeightedComfortEvaluator` + `ComfynessMode` + `Serial1` UART telemetry emitter.
   - Extensible `IGadgetMode` placeholders (`SoundPartyMode`, `PomodoroFocusMode`).
-- [x] **Phase 3 — ESP32-C3 Web Gateway (`c3_gateway`)**:
-  - Non-blocking UART parser receiving `T` frames and sending `C` frames.
-  - Wi-Fi Manager (Station + fallback SoftAP `MCsHAL-Gateway`).
+- [x] **Phase 3 — ESP32-C3 Web Gateway (`c3_gateway`) — VERIFIED END-TO-END**:
+  - Non-blocking UART parser receiving `T` frames and sending `C` frames (verified bidirectionally: `POST /api/config?mode=2&muted=1` applied on the CPX and echoed in telemetry).
+  - Wi-Fi Manager: Station with bounded 20 s attempt + clean SoftAP `MCsHAL-Gateway` fallback (`http://192.168.4.1/`); NVS credentials saved from the web UI; reached home LAN at `http://192.168.1.111/`.
   - Live Web Dashboard showing temperature, light, noise dB, comfort gauge, and threshold/mode controls.
-- [ ] **Phase 4 — Future Sandbox Modes**:
-  - Fill in `SoundPartyMode` and `PomodoroFocusMode` implementations.
+- [x] **Phase 3.5 — CPX Audio & Storage Subsystem (`cpx_node`)**:
+  - `IAudioCodec` (`ImaAdpcmCodec` 4-bit, `Raw8BitPcmCodec`) + `IAudioStorage` (`SramAudioStorage` 16 KB, `SpiFlashAudioStorage` onboard 2 MB GD25Q16C).
+  - `VoiceRecorderService`: hold D5 to record 4 s ADPCM clip (persisted to SPI flash, survives power-off); tap D5 to replay.
+  - Class-D speaker amp held in shutdown (`D11` LOW) except during active audio output.
+  - 10-bit DAC synth sweeps/arpeggio + LPC speech (`say10Bit`, 4x pre-gain); live mic FFT ring in `SoundPartyMode`.
+- [ ] **Phase 4 — Future Directions**:
+  - Voice command recognition: stream mic audio/FFT slices over UART to an ESP32-S3 (or PC via the C3) running TFLite Micro / Edge Impulse keyword spotting.
   - Add historical comfort graphing or MQTT/Home Assistant publishing on `c3_gateway`.
