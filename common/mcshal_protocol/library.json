@@ -1,0 +1,8 @@
+{
+  "name": "mcshal_protocol",
+  "version": "1.0.0",
+  "description": "Shared UART telemetry and command protocol between CPX and ESP32-C3",
+  "build": {
+    "includeDir": "include"
+  }
+}

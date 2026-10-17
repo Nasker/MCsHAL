@@ -1,0 +1,8 @@
+{
+  "folders": [
+    { "name": "MCsHAL (Root)", "path": "." },
+    { "name": "CPX Sensory Node (SAMD21)", "path": "cpx_node" },
+    { "name": "ESP32-C3 Wi-Fi Gateway", "path": "c3_gateway" }
+  ],
+  "settings": {}
+}
