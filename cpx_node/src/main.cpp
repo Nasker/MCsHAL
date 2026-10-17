@@ -142,6 +142,7 @@ void setup() {
     g_voice_recorder.begin();
     g_gateway.begin(115200);
     g_orchestrator.begin();
+    Serial.print(F("BOOT OK\n")); // one-shot liveness marker on USB CDC
 }
 
 void loop() {

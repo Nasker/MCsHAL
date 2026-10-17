@@ -217,27 +217,24 @@ public:
 private:
     // Wakes the onboard Class-D audio amplifier (D11 = HIGH) and connects A0 to the 10-bit DAC
     static void enableSpeakerAmp() {
-        pinPeripheral(A0, PIO_ANALOG);
-        while (DAC->STATUS.bit.SYNCBUSY == 1) {}
-        DAC->CTRLB.reg = DAC_CTRLB_REFSEL_AVCC | DAC_CTRLB_EOEN;
-        while (DAC->STATUS.bit.SYNCBUSY == 1) {}
-        DAC->CTRLA.bit.ENABLE = 1;
-        while (DAC->STATUS.bit.SYNCBUSY == 1) {}
+        static bool dac_initialized = false;
+        if (!dac_initialized) {
+            dac_initialized = true;
+            pinPeripheral(A0, PIO_ANALOG);
+            while (DAC->STATUS.bit.SYNCBUSY == 1) {}
+            DAC->CTRLA.bit.ENABLE = 1;
+            while (DAC->STATUS.bit.SYNCBUSY == 1) {}
+        }
         writeDac10Bit(512);
         pinMode(CPLAY_SPEAKER_SHUTDOWN, OUTPUT);
         digitalWrite(CPLAY_SPEAKER_SHUTDOWN, HIGH);
-        delay(3); // Allow Class-D amplifier charge pump to settle
+        delay(3);
     }
 
-    // Shuts down the Class-D audio amplifier (D11 = LOW -> <1 uA, zero static hiss)
-    // and disables the SAMD21 DAC peripheral to save power
+    // Shuts down the PAM8301 Class-D audio amplifier (D11 = LOW -> <1 uA, zero static hiss)
     static void disableSpeakerAmp() {
         pinMode(CPLAY_SPEAKER_SHUTDOWN, OUTPUT);
         digitalWrite(CPLAY_SPEAKER_SHUTDOWN, LOW);
-        while (DAC->STATUS.bit.SYNCBUSY == 1) {}
-        DAC->CTRLA.bit.ENABLE = 0;
-        while (DAC->STATUS.bit.SYNCBUSY == 1) {}
-        pinMode(A0, INPUT);
     }
 
     static inline void writeDac10Bit(uint16_t sample_10bit) {
@@ -414,8 +411,9 @@ public:
     explicit CpxSerialGateway(HardwareSerial &uart) : uart_(uart) {}
 
     void begin(unsigned long baud = 115200) {
-        pinMode(PIN_SERIAL1_RX, INPUT_PULLUP);
         uart_.begin(baud);
+        pinPeripheral(PIN_SERIAL1_RX, PIO_SERCOM_ALT);
+        pinPeripheral(PIN_SERIAL1_TX, PIO_SERCOM_ALT);
         PORT->Group[PORTB].PINCFG[9].bit.PULLEN = 1;
         PORT->Group[PORTB].OUTSET.reg = (1ul << 9);
     }
@@ -423,7 +421,9 @@ public:
     void publish(const TelemetryFrame &frame) override {
         char buf[96];
         size_t len = ProtocolCodec::encodeTelemetry(frame, buf, sizeof(buf));
-        if (len > 0 && uart_.availableForWrite() >= static_cast<int>(len)) {
+        if (len > 0) {
+            tx_led_ = !tx_led_;
+            CircuitPlayground.redLED(tx_led_);
             uart_.write(reinterpret_cast<const uint8_t *>(buf), len);
         }
     }
@@ -451,6 +451,7 @@ private:
     HardwareSerial &uart_;
     char rx_buf_[80]{};
     size_t rx_pos_{0};
+    bool tx_led_{false};
 };
 
 } // namespace mcshal
