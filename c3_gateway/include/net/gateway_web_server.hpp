@@ -4,6 +4,7 @@
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include "domain/gadget_director.hpp"
 #include "interfaces/i_cpx_bridge.hpp"
 #include "wifi_secrets.h"
 
@@ -14,7 +15,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MCsHAL Living Room Comfort</title>
+<title>MCsHAL Living Room</title>
 <style>
   :root { --bg:#0f172a; --card:#1e293b; --text:#f8fafc; --muted:#94a3b8; --accent:#38bdf8; }
   * { box-sizing:border-box; margin:0; padding:0; }
@@ -30,13 +31,21 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .metric .label { font-size:0.75rem; color:var(--muted); }
   .metric .val { font-size:1.15rem; font-weight:700; margin-top:4px; }
   .controls { display:flex; flex-direction:column; gap:10px; border-top:1px solid rgba(255,255,255,0.08); padding-top:14px; }
-  label { display:flex; justify-content:space-between; align-items:center; font-size:0.85rem; color:var(--muted); }
-  select, input, button { padding:8px 10px; border-radius:8px; border:1px solid rgba(255,255,255,0.15); background:#0f172a; color:var(--text); }
-  button { background:var(--accent); color:#0f172a; font-weight:700; border:none; cursor:pointer; margin-top:4px; }
+  label { display:flex; justify-content:space-between; align-items:center; font-size:0.85rem; color:var(--muted); gap:8px; }
+  select, input, button, textarea { padding:8px 10px; border-radius:8px; border:1px solid rgba(255,255,255,0.15); background:#0f172a; color:var(--text); }
+  button { background:var(--accent); color:#0f172a; font-weight:700; border:none; cursor:pointer; }
   .btn-secondary { background:#334155; color:var(--text); }
+  .remote { border-top:1px solid rgba(255,255,255,0.08); padding-top:14px; margin-bottom:14px; }
+  .remote h2 { font-size:0.95rem; margin-bottom:10px; color:var(--muted); text-align:center; }
+  .dpad { display:grid; grid-template-columns:repeat(3,64px); grid-template-rows:repeat(3,52px); gap:8px; justify-content:center; margin-bottom:8px; }
+  .dpad button { font-size:1.15rem; }
+  .remote-row { display:flex; gap:8px; justify-content:center; }
+  .remote-row button { flex:0 0 auto; min-width:80px; }
   details { border-top:1px solid rgba(255,255,255,0.08); margin-top:14px; padding-top:12px; font-size:0.85rem; color:var(--muted); }
   summary { cursor:pointer; font-weight:600; margin-bottom:8px; }
-  .wifi-form { display:flex; flex-direction:column; gap:8px; }
+  .wifi-form, .theme-form, .policy-form { display:flex; flex-direction:column; gap:8px; }
+  textarea { font-family:ui-monospace,monospace; font-size:0.72rem; min-height:180px; white-space:pre; }
+  .msg { font-size:0.8rem; min-height:1em; }
 </style>
 </head>
 <body>
@@ -46,7 +55,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <span class="badge" id="link">Connecting...</span>
   </div>
   <div class="score-box">
-    <div style="font-size:0.8rem;color:var(--muted)">COMFYNESS SCORE</div>
+    <div style="font-size:0.8rem;color:var(--muted)">STATE: <b id="state">--</b></div>
     <div class="score" id="score">--</div>
     <div id="alert" style="font-size:0.85rem;color:#94a3b8">Waiting for CPX UART link...</div>
   </div>
@@ -55,9 +64,25 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <div class="metric"><div class="label">Light</div><div class="val" id="light">--</div></div>
     <div class="metric"><div class="label">Noise</div><div class="val" id="sound">-- dB</div></div>
   </div>
+
+  <div class="remote">
+    <h2>TV Remote (LG / IR)</h2>
+    <div class="dpad">
+      <span></span><button onclick="tv('up')">&#9650;</button><span></span>
+      <button onclick="tv('left')">&#9664;</button><button onclick="tv('ok')">OK</button><button onclick="tv('right')">&#9654;</button>
+      <span></span><button onclick="tv('down')">&#9660;</button><span></span>
+    </div>
+    <div class="remote-row">
+      <button onclick="tv('power')" style="background:#f87171">&#x23FB; Power</button>
+      <button class="btn-secondary" onclick="tv('back')">&#8617; Back</button>
+      <button class="btn-secondary" onclick="greet()">&#10024; Greet</button>
+    </div>
+  </div>
+
   <form class="controls" onsubmit="applyCfg(event)">
     <label>Gadget Mode
       <select id="mode">
+        <option value="3">Seasonal Costume</option>
         <option value="0">Comfyness Monitor (MVP)</option>
         <option value="1">Sound Party Spectrum (Sandbox)</option>
         <option value="2">Pomodoro Rainbow (Sandbox)</option>
@@ -71,23 +96,51 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </form>
 
   <details>
+    <summary>Seasonal Theme (costume + tune)</summary>
+    <div class="theme-form">
+      <label>Theme <select id="theme" style="width:200px"></select></label>
+      <div class="remote-row">
+        <button type="button" onclick="applyTheme()">Apply &amp; Greet</button>
+        <button type="button" class="btn-secondary" onclick="loadTheme()">Load JSON</button>
+        <button type="button" class="btn-secondary" onclick="saveTheme()">Save JSON</button>
+      </div>
+      <textarea id="theme_json" spellcheck="false" placeholder='{"name":"mytheme","season":{"from":"10-15","to":"11-05"},"costume":{"animation":"pulse","anim_speed":5,"pixels":[{"r":0,"g":0,"b":0}]},"melody":{"notes":[{"f":440,"d":300}]}}'></textarea>
+      <div class="msg" id="theme-msg"></div>
+    </div>
+  </details>
+
+  <details>
+    <summary>Wake / Sleep Policy</summary>
+    <form class="policy-form" onsubmit="savePolicy(event)">
+      <label>Light-on threshold <input id="pol_light" type="number" min="0" max="1023" style="width:90px"></label>
+      <label>Day window start <input id="pol_day0" type="time" value="07:00" style="width:110px"></label>
+      <label>Day window end <input id="pol_day1" type="time" value="23:00" style="width:110px"></label>
+      <label>Idle timeout (min) <input id="pol_idle" type="number" min="1" max="60" value="5" style="width:90px"></label>
+      <button type="submit">Save &amp; Push Policy</button>
+      <div class="msg" id="policy-msg"></div>
+    </form>
+  </details>
+
+  <details>
     <summary>ESP32-C3 Wi-Fi Settings <span id="ip-info"></span></summary>
     <form class="wifi-form" onsubmit="saveWifi(event)">
       <input id="ssid" placeholder="Home Wi-Fi SSID (2.4 GHz)" required>
       <input id="pass" type="password" placeholder="Wi-Fi Password">
-      <button type="submit">Save & Connect to Home Wi-Fi</button>
-      <div id="wifi-msg"></div>
+      <button type="submit">Save &amp; Connect to Home Wi-Fi</button>
+      <div class="msg" id="wifi-msg"></div>
     </form>
   </details>
 </div>
 <script>
+const STATES = ['Idle','Greeting','Active'];
 async function poll() {
   try {
     const r = await fetch('/api/telemetry');
     const d = await r.json();
-    const online = d.age_ms < 3000;
+    const online = d.age_ms < 15000;
     document.getElementById('link').textContent = online ? 'CPX Linked (UART)' : 'CPX Unplugged (C3 Ready)';
     if (online) {
+      document.getElementById('state').textContent = STATES[d.state] || d.state;
       document.getElementById('score').textContent = d.score;
       document.getElementById('temp').textContent = d.temp.toFixed(1) + ' °C';
       document.getElementById('light').textContent = d.light;
@@ -108,8 +161,63 @@ async function applyCfg(e) {
   });
   await fetch('/api/config?' + q.toString(), { method: 'POST' });
 }
-async function blinkC3() {
-  await fetch('/api/blink', { method: 'POST' });
+async function tv(key) { await fetch('/api/tv?key=' + key, { method: 'POST' }); }
+async function greet() { await fetch('/api/greet', { method: 'POST' }); }
+async function blinkC3() { await fetch('/api/blink', { method: 'POST' }); }
+
+async function refreshThemes() {
+  try {
+    const d = await (await fetch('/api/themes')).json();
+    const sel = document.getElementById('theme');
+    sel.innerHTML = '';
+    for (const n of d.themes) {
+      const o = document.createElement('option');
+      o.value = n; o.textContent = n + (n === d.active ? ' (active)' : '');
+      sel.appendChild(o);
+    }
+    if (d.active) sel.value = d.active;
+  } catch (e) {}
+}
+async function applyTheme() {
+  const n = document.getElementById('theme').value;
+  await fetch('/api/apply_theme?name=' + encodeURIComponent(n), { method: 'POST' });
+  document.getElementById('theme-msg').textContent = 'Applied ' + n;
+  refreshThemes();
+}
+async function loadTheme() {
+  const n = document.getElementById('theme').value;
+  const r = await fetch('/api/theme?name=' + encodeURIComponent(n));
+  document.getElementById('theme_json').value = await r.text();
+}
+async function saveTheme() {
+  const n = document.getElementById('theme').value;
+  const r = await fetch('/api/theme?name=' + encodeURIComponent(n), {
+    method: 'POST', body: document.getElementById('theme_json').value
+  });
+  document.getElementById('theme-msg').textContent = await r.text();
+  refreshThemes();
+}
+async function refreshPolicy() {
+  try {
+    const d = await (await fetch('/api/policy')).json();
+    document.getElementById('pol_light').value = d.light_on_threshold;
+    const fmt = m => String(Math.floor(m/60)).padStart(2,'0') + ':' + String(m%60).padStart(2,'0');
+    document.getElementById('pol_day0').value = fmt(d.day_start_min);
+    document.getElementById('pol_day1').value = fmt(d.day_end_min);
+    document.getElementById('pol_idle').value = d.idle_timeout_min;
+  } catch (e) {}
+}
+async function savePolicy(e) {
+  e.preventDefault();
+  const hm = s => { const [h,m] = s.split(':'); return (parseInt(h)||0)*60 + (parseInt(m)||0); };
+  const q = new URLSearchParams({
+    light: document.getElementById('pol_light').value,
+    day_start: hm(document.getElementById('pol_day0').value),
+    day_end: hm(document.getElementById('pol_day1').value),
+    idle_min: document.getElementById('pol_idle').value
+  });
+  const r = await fetch('/api/policy?' + q.toString(), { method: 'POST' });
+  document.getElementById('policy-msg').textContent = await r.text();
 }
 async function saveWifi(e) {
   e.preventDefault();
@@ -121,6 +229,8 @@ async function saveWifi(e) {
 }
 setInterval(poll, 750);
 poll();
+refreshThemes();
+refreshPolicy();
 </script>
 </body>
 </html>
@@ -128,8 +238,9 @@ poll();
 
 class GatewayWebServer {
 public:
-    GatewayWebServer(ICpxBridge &bridge, uint16_t port = 80)
-        : bridge_(bridge), server_(port) {}
+    GatewayWebServer(ICpxBridge &bridge, GadgetDirector &director,
+                     ThemeCatalog &catalog, uint16_t port = 80)
+        : bridge_(bridge), director_(director), catalog_(catalog), server_(port) {}
 
     void begin() {
         server_.on("/", HTTP_GET, [this]() {
@@ -142,10 +253,10 @@ public:
             String ip = (WiFi.status() == WL_CONNECTED)
                             ? WiFi.localIP().toString()
                             : WiFi.softAPIP().toString();
-            char json[240];
+            char json[256];
             snprintf(json, sizeof(json),
                      "{\"temp\":%.1f,\"light\":%u,\"sound\":%.1f,\"score\":%u,"
-                     "\"noisy\":%s,\"muted\":%s,\"mode\":%u,\"age_ms\":%lu,\"ip\":\"%s\"}",
+                     "\"noisy\":%s,\"muted\":%s,\"mode\":%u,\"state\":%u,\"age_ms\":%lu,\"ip\":\"%s\"}",
                      static_cast<double>(f.temperature_c),
                      static_cast<unsigned>(f.light_level),
                      static_cast<double>(f.sound_db),
@@ -153,6 +264,7 @@ public:
                      f.is_too_noisy ? "true" : "false",
                      f.is_muted ? "true" : "false",
                      static_cast<unsigned>(f.mode),
+                     static_cast<unsigned>(f.state),
                      static_cast<unsigned long>(age),
                      ip.c_str());
             server_.send(200, "application/json", json);
@@ -169,6 +281,91 @@ public:
             last_cmd_ = cmd;
             bridge_.sendCommand(cmd);
             server_.send(200, "text/plain", "OK");
+        });
+
+        server_.on("/api/tv", HTTP_POST, [this]() {
+            IrKeyId key;
+            if (!parseKey(server_.arg("key"), key)) {
+                server_.send(400, "text/plain", "unknown key");
+                return;
+            }
+            bridge_.sendRemote(key);
+            server_.send(200, "text/plain", "IR sent");
+        });
+
+        server_.on("/api/greet", HTTP_POST, [this]() {
+            bridge_.sendGreet();
+            server_.send(200, "text/plain", "Greeting requested");
+        });
+
+        server_.on("/api/themes", HTTP_GET, [this]() {
+            String json = "{\"active\":\"" + director_.activeTheme() + "\",\"themes\":[";
+            bool first = true;
+            for (const String &n : catalog_.list()) {
+                if (!first) json += ',';
+                json += "\"" + n + "\"";
+                first = false;
+            }
+            json += "]}";
+            server_.send(200, "application/json", json);
+        });
+
+        server_.on("/api/theme", HTTP_GET, [this]() {
+            Theme t;
+            if (!catalog_.load(server_.arg("name"), t)) {
+                server_.send(404, "text/plain", "theme not found");
+                return;
+            }
+            // Stream the raw file back so edits round-trip verbatim
+            File f = LittleFS.open("/themes/" + server_.arg("name") + ".json", "r");
+            server_.streamFile(f, "application/json");
+            f.close();
+        });
+
+        server_.on("/api/theme", HTTP_POST, [this]() {
+            String name = server_.arg("name");
+            if (!name.length()) {
+                server_.send(400, "text/plain", "missing ?name=");
+                return;
+            }
+            String err;
+            if (!catalog_.save(name, server_.arg("plain"), err)) {
+                server_.send(400, "text/plain", "save failed: " + err);
+                return;
+            }
+            server_.send(200, "text/plain", "saved " + name);
+        });
+
+        server_.on("/api/apply_theme", HTTP_POST, [this]() {
+            String name = server_.arg("name");
+            if (!director_.applyTheme(name)) {
+                server_.send(404, "text/plain", "theme not found");
+                return;
+            }
+            bridge_.sendGreet(); // show it off immediately
+            server_.send(200, "text/plain", "applied " + name);
+        });
+
+        server_.on("/api/policy", HTTP_GET, [this]() {
+            const WakePolicy &w = director_.policy();
+            char json[160];
+            snprintf(json, sizeof(json),
+                     "{\"light_on_threshold\":%u,\"day_start_min\":%u,\"day_end_min\":%u,\"idle_timeout_min\":%u}",
+                     static_cast<unsigned>(w.light_on_threshold),
+                     static_cast<unsigned>(w.day_start_min),
+                     static_cast<unsigned>(w.day_end_min),
+                     static_cast<unsigned>(w.idle_timeout_min));
+            server_.send(200, "application/json", json);
+        });
+
+        server_.on("/api/policy", HTTP_POST, [this]() {
+            WakePolicy w = director_.policy();
+            if (server_.hasArg("light")) w.light_on_threshold = server_.arg("light").toInt();
+            if (server_.hasArg("day_start")) w.day_start_min = server_.arg("day_start").toInt();
+            if (server_.hasArg("day_end")) w.day_end_min = server_.arg("day_end").toInt();
+            if (server_.hasArg("idle_min")) w.idle_timeout_min = server_.arg("idle_min").toInt();
+            director_.setPolicy(w);
+            server_.send(200, "text/plain", "policy saved + pushed");
         });
 
         server_.on("/api/blink", HTTP_POST, [this]() {
@@ -202,7 +399,20 @@ public:
     void handleClient() { server_.handleClient(); }
 
 private:
+    static bool parseKey(const String &name, IrKeyId &out) {
+        if (name == "power") { out = IrKeyId::Power; return true; }
+        if (name == "up")    { out = IrKeyId::Up; return true; }
+        if (name == "down")  { out = IrKeyId::Down; return true; }
+        if (name == "left")  { out = IrKeyId::Left; return true; }
+        if (name == "right") { out = IrKeyId::Right; return true; }
+        if (name == "ok")    { out = IrKeyId::Ok; return true; }
+        if (name == "back")  { out = IrKeyId::Back; return true; }
+        return false;
+    }
+
     ICpxBridge &bridge_;
+    GadgetDirector &director_;
+    ThemeCatalog &catalog_;
     WebServer server_;
     ConfigCommand last_cmd_{};
 };

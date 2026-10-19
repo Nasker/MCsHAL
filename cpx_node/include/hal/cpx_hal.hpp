@@ -21,6 +21,9 @@ public:
         return r;
     }
 
+    // Cheap light-only read used by the Idle state (no mic/PDM clock start).
+    uint16_t sampleLight() override { return CircuitPlayground.lightSensor(); }
+
     // Zero-static-RAM 32-band frequency/envelope decomposition (saves 8KB SRAM vs Adafruit_ZeroFFT)
     void sampleFft(uint16_t (&spectrum)[32]) override {
         int16_t raw[64];
@@ -116,6 +119,33 @@ public:
         CircuitPlayground.strip.show();
     }
 
+    // Seasonal costume renderer: per-pixel palette + one of 4 cheap animations.
+    void renderCostume(const CostumePalette &costume, uint8_t phase) override {
+        for (uint8_t i = 0; i < 10; ++i) {
+            uint8_t src = i;
+            if (costume.anim == CostumeAnim::Spin) {
+                src = static_cast<uint8_t>((i + phase) % 10);
+            }
+            uint16_t r = costume.px[src][0];
+            uint16_t g = costume.px[src][1];
+            uint16_t b = costume.px[src][2];
+
+            uint16_t scale = 255;
+            if (costume.anim == CostumeAnim::Pulse) {
+                uint8_t tri = (phase & 0x80) ? static_cast<uint8_t>(255 - ((phase - 128) * 2))
+                                             : static_cast<uint8_t>(phase * 2);
+                scale = 80 + (static_cast<uint16_t>(tri) * 175) / 255;
+            } else if (costume.anim == CostumeAnim::Sparkle) {
+                if (((phase * 37 + i * 53) & 0x1F) < 2) scale = 400; // occasional twinkle
+            }
+            r = r * scale / 255;
+            g = g * scale / 255;
+            b = b * scale / 255;
+            CircuitPlayground.strip.setPixelColor(i, r, g, b);
+        }
+        CircuitPlayground.strip.show();
+    }
+
     void clear() override { CircuitPlayground.clearPixels(); }
 
 private:
@@ -139,6 +169,38 @@ public:
         playDacSweep10Bit(260.0f, 1046.5f, 180);
         say10Bit(vocab::spHELLO);
         say10Bit(vocab::spGOOD);
+        disableSpeakerAmp();
+    }
+
+    void ampOn() override { enableSpeakerAmp(); }
+    void ampOff() override { disableSpeakerAmp(); }
+
+    // Single square-wave note on the 10-bit DAC; freq 0 = rest. Caller owns the amp.
+    void playTone(uint16_t freq_hz, uint16_t dur_ms) override {
+        if (freq_hz == 0) {
+            writeDac10Bit(512);
+            delay(dur_ms);
+            return;
+        }
+        const uint32_t sample_rate = 16000;
+        const uint32_t total = (static_cast<uint32_t>(dur_ms) * sample_rate) / 1000;
+        const uint32_t us_per_sample = 1000000UL / sample_rate;
+        const uint32_t phase_step = (static_cast<uint32_t>(freq_hz) * 65536UL) / sample_rate;
+        uint32_t phase = 0;
+        for (uint32_t s = 0; s < total; ++s) {
+            phase += phase_step;
+            writeDac10Bit((phase & 0x8000) ? 900 : 124);
+            delayMicroseconds(us_per_sample);
+        }
+        writeDac10Bit(512);
+    }
+
+    // Seasonal tune convenience: manages the amp for a whole melody.
+    void playMelody(const uint16_t *freq_hz, const uint16_t *dur_ms, uint8_t count) override {
+        enableSpeakerAmp();
+        for (uint8_t i = 0; i < count; ++i) {
+            playTone(freq_hz[i], dur_ms[i]);
+        }
         disableSpeakerAmp();
     }
 
@@ -428,20 +490,23 @@ public:
         }
     }
 
-    bool pollCommand(ConfigCommand &out_cmd) override {
+    // Returns the next complete inbound frame (without newline); the orchestrator
+    // dispatches on the frame id ('C','D','W','K','M','R').
+    bool pollLine(char *out, size_t max_len) override {
         while (uart_.available() > 0) {
             char c = static_cast<char>(uart_.read());
             if (c == '\r') continue;
             if (c == '\n') {
                 rx_buf_[rx_pos_] = '\0';
                 rx_pos_ = 0;
-                if (ProtocolCodec::decodeCommand(rx_buf_, out_cmd)) {
-                    return true;
-                }
+                if (rx_buf_[0] == '\0') continue;
+                strncpy(out, rx_buf_, max_len - 1);
+                out[max_len - 1] = '\0';
+                return true;
             } else if (rx_pos_ + 1 < sizeof(rx_buf_)) {
                 rx_buf_[rx_pos_++] = c;
             } else {
-                rx_pos_ = 0;
+                rx_pos_ = 0; // overflow: drop the malformed frame
             }
         }
         return false;
@@ -449,7 +514,7 @@ public:
 
 private:
     HardwareSerial &uart_;
-    char rx_buf_[80]{};
+    char rx_buf_[200]{};
     size_t rx_pos_{0};
     bool tx_led_{false};
 };

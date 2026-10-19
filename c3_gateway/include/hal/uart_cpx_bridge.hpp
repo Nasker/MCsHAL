@@ -62,13 +62,45 @@ public:
 
     void sendCommand(const ConfigCommand &cmd) override {
         char buf[64];
-        size_t len = ProtocolCodec::encodeCommand(cmd, buf, sizeof(buf));
+        sendEncoded(ProtocolCodec::encodeCommand(cmd, buf, sizeof(buf)), buf);
+    }
+
+    void sendClock(const ClockSync &clk) override {
+        char buf[24];
+        sendEncoded(ProtocolCodec::encodeClock(clk, buf, sizeof(buf)), buf);
+    }
+
+    void sendPolicy(const WakePolicy &w) override {
+        char buf[40];
+        sendEncoded(ProtocolCodec::encodePolicy(w, buf, sizeof(buf)), buf);
+    }
+
+    void sendCostume(const CostumePalette &k) override {
+        char buf[192];
+        sendEncoded(ProtocolCodec::encodeCostume(k, buf, sizeof(buf)), buf);
+    }
+
+    void sendMelodyChunk(const MelodyChunk &m) override {
+        char buf[128];
+        sendEncoded(ProtocolCodec::encodeMelodyChunk(m, buf, sizeof(buf)), buf);
+    }
+
+    void sendRemote(IrKeyId key) override {
+        char buf[12];
+        sendEncoded(ProtocolCodec::encodeRemote(key, buf, sizeof(buf)), buf);
+    }
+
+    void sendGreet() override {
+        serial_.write(reinterpret_cast<const uint8_t *>("G\n"), 2);
+    }
+
+private:
+    void sendEncoded(size_t len, const char *buf) {
         if (len > 0) {
             serial_.write(reinterpret_cast<const uint8_t *>(buf), len);
         }
     }
 
-private:
     HardwareSerial &serial_;
     int rx_pin_;
     int tx_pin_;

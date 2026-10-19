@@ -75,3 +75,52 @@ Human-readable, newline-delimited frames at `115200 8N1` (easy to debug with any
 - [ ] **Phase 4 — Future Directions**:
   - Voice command recognition: stream mic audio/FFT slices over UART to an ESP32-S3 (or PC via the C3) running TFLite Micro / Edge Impulse keyword spotting.
   - Add historical comfort graphing or MQTT/Home Assistant publishing on `c3_gateway`.
+
+---
+
+## 5. Phase 5 — Living-Room TV Companion (State Pattern)
+
+### 5.1 Lifecycle States (`IGadgetState`, CPX)
+`GadgetOrchestrator` owns a state context; each state implements `onEnter()`, `tick(now)`, `onExit()`, `name()`:
+
+| State | Behaviour | Exit condition |
+| :--- | :--- | :--- |
+| **Idle** | Amp off, NeoPixels off, mic off. Light sensor sampled every ~10 s only; CPU dozes between samples; heartbeat telemetry every ~10 s. | Light >= `light_on_threshold` while `day_window` active -> Greeting. |
+| **Greeting** | Plays the season melody on the DAC (amp wakes for the tune) and runs the costume LED animation. | Melody finished -> Active. |
+| **Active** | Costume LED pattern stays rendered (default `CostumeMode`; `Comfyness/Party/Pomodoro` still selectable as renderers). Full 2 Hz telemetry. IR remote commands emitted on demand. | No activity for `idle_timeout_min` **and** light below threshold -> Idle. |
+
+### 5.2 Division of Labour
+- **C3 = policy + storage + network**: NTP clock (POSIX TZ), day-window evaluation, season->theme resolution from JSON, web UI, pushes compact wire frames to the CPX.
+- **CPX = deterministic render/actuation**: light sensing, state machine, LED/DAC/IR outputs. No JSON parsing on the 32 KB SAMD21 — themes arrive as compact `K`/`M` frames.
+
+### 5.3 Extended Wire Protocol (`mcshal_protocol.hpp`)
+- `T,...,<state>` — telemetry gains `state` field (0=Idle,1=Greeting,2=Active).
+- `D,<minute_of_day>,<day_window_active>` — clock/policy sync (~60 s cadence + on link-up).
+- `W,<light_on_lux>,<day_start_min>,<day_end_min>,<idle_timeout_min>` — wake policy config.
+- `K,<topR>,<topG>,<topB>,<bodyR>,<bodyG>,<bodyB>,<anim>` — costume palette+animation.
+- `M,<total>,<i>,<f>,<d>[,<f>,<d>...]` — melody chunks (`f`=Hz, `d`=ms, `i`=note offset).
+- `R,<key>` — IR remote command (0=POWER,1=UP,2=DOWN,3=LEFT,4=RIGHT,5=OK,6=BACK) -> CPX emits LG NEC on onboard IR LED (pin 25).
+
+### 5.4 Theme JSON (LittleFS `/themes/*.json` on C3, editable via web UI)
+```json
+{
+  "name": "halloween", "label": "Halloween Pumpkin",
+  "active": {"from": "10-15", "to": "11-05"},
+  "costume": {
+    "pixels": [{"range": "0", "color": "#18FF00"}, {"range": "1-9", "color": "#FF7A00"}],
+    "animation": "pulse", "anim_speed": 5
+  },
+  "melody": [[659,300],[622,300],[659,300],[622,300],[659,300],[494,300],[587,300],[523,300],[440,700]]
+}
+```
+C3 picks the first theme whose `from..to` (MM-DD, wraps across year end) contains today's date; fallback `default.json` / built-in.
+
+### 5.5 Web UI additions
+- TV remote pad (Power, arrows, OK, Back) -> `POST /api/tv?key=N`.
+- `POST /api/greet` force-triggers the greeting; `/api/themes` list, `GET/POST /api/theme?name=x` JSON editor.
+- Config form gains light threshold, day start/end, idle timeout (-> `W` frame).
+
+### 5.6 Power Budget
+- Idle: NeoPixels 0 mA, amp <1 uA, mic/PDM off, CPU idles between 10 s samples; UART down to a 10 s heartbeat.
+- C3: `WIFI_PS_MIN_MODEM` modem sleep; web server stays live.
+- Known limit: onboard IR LED is short-range (board-to-board by design); an external IR LED + transistor on a free pad is the upgrade path for couch-to-TV distance.

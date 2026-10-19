@@ -2,12 +2,18 @@
 #include <Preferences.h>
 #include <WiFi.h>
 
+#include "domain/gadget_director.hpp"
+#include "domain/theme_catalog.hpp"
 #include "hal/uart_cpx_bridge.hpp"
 #include "net/gateway_web_server.hpp"
+#include "net/time_service.hpp"
 #include "wifi_secrets.h"
 
 static mcshal::UartCpxBridge g_cpx_bridge(Serial1, 21, 20, CPX_UART_BAUD);
-static mcshal::GatewayWebServer g_web_server(g_cpx_bridge, 80);
+static mcshal::TimeService g_time;
+static mcshal::ThemeCatalog g_themes;
+static mcshal::GadgetDirector g_director(g_cpx_bridge, g_themes, g_time);
+static mcshal::GatewayWebServer g_web_server(g_cpx_bridge, g_director, g_themes, 80);
 static bool g_logged_sta_ip = false;
 
 static void setupWifi() {
@@ -91,6 +97,8 @@ void setup() {
     Serial.begin(115200);
     g_cpx_bridge.begin();
     setupWifi();
+    g_time.begin(); // NTP sync happens async once STA is up
+    g_themes.begin();
     g_web_server.begin();
     Serial.println("MCsHAL ESP32-C3 Gateway HTTP Server started on port 80");
 }
@@ -120,9 +128,10 @@ static void printDiagnostics(uint32_t now_ms) {
                       static_cast<unsigned>(f.light_level),
                       static_cast<double>(f.sound_db),
                       static_cast<unsigned>(f.comfort_score));
-    } else {
-        // Temporarily detach Serial1 and put all candidate pins in INPUT_PULLUP for 600ms
-        // so the UART TX output driver cannot fight/mask the incoming CPX signal.
+    } else if (g_cpx_bridge.frameCount() == 0) {
+        // One-time bring-up aid: while the UART has never decoded a frame, detach
+        // Serial1 and probe all candidate pins for 600ms (TX driver masks input
+        // otherwise). Skipped once linked so it can't steal idle heartbeats.
         Serial1.end();
         const int test_pins[] = {20, 21, 8, 0, 1, 2, 3, 4, 5, 6, 7, 9, 10};
         int last_val[13] = {};
@@ -153,6 +162,14 @@ static void printDiagnostics(uint32_t now_ms) {
                       trans[2], last_val[2],
                       trans[3], trans[4], trans[5], trans[6], trans[7],
                       trans[8], trans[9], trans[10], trans[11], trans[12]);
+    } else {
+        Serial.printf("[DIAG] %s | CPX quiet (RX=%d,TX=%d, frames=%lu, age=%lums) last='%s'\n",
+                      wifi_str.c_str(),
+                      g_cpx_bridge.activeRxPin(),
+                      g_cpx_bridge.activeTxPin(),
+                      static_cast<unsigned long>(g_cpx_bridge.frameCount()),
+                      static_cast<unsigned long>(age),
+                      g_cpx_bridge.lastRawLine());
     }
 }
 
@@ -182,6 +199,7 @@ static void maintainWiFi(uint32_t now_ms) {
 void loop() {
     uint32_t now = millis();
     g_cpx_bridge.poll(now);
+    g_director.tick(now);
     g_web_server.handleClient();
     updateStatusLed(now);
     maintainWiFi(now);
